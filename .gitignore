@@ -1,0 +1,11 @@
+# Vivado project and simulation output (recreated locally)
+vivado/
+project_1.*
+*.xpr
+.Xil/
+*.jou
+*.log
+*.str
+*.wdb
+xsim.dir/
+tb/tb_hello.sv
