@@ -99,7 +99,7 @@ Self-checking testbench `tb_cache.sv`:
 
 ## 3. Results
 
-### Verification (Vivado XSim)
+### Verification
 
 | Item | Result |
 |---|---|
@@ -113,7 +113,7 @@ Self-checking testbench `tb_cache.sv`:
 
 The testbench was checked by deliberately breaking the design: ignoring the valid bit is caught by the first directed test (a false hit on an empty cache), and not updating the cache on a write hit is caught by the read-after-write test.
 
-The same testbench also runs in Verilator as a second opinion.
+The testbench runs in Vivado XSim and in Verilator (as a second opinion). The final, RAM-based version was verified in Verilator; the first version passed the same tests in XSim.
 
 ### Synthesis and implementation (Artix-7 xc7a35t, 100 MHz, out-of-context)
 
@@ -129,6 +129,8 @@ The same testbench also runs in Verilator as a second opinion.
 
 The critical path runs from the request address register through the tag comparison to the RAM write enable (5 logic levels, 6.7 ns).
 
+These figures were measured with the clock constraint only. `constr/cache_timing.xdc` now also sets the clock source and a 2 ns input/output delay budget, which clears the out-of-context clock and missing-I/O-delay warnings and brings the I/O paths into timing analysis. The remaining implementation warnings (partition pin locations, connectivity DRCs not run) are inherent to out-of-context implementation of a block without its surrounding design.
+
 The cache is synthesised out-of-context because, as a standalone block, it has far more I/O signals than the device has pins; in a real system it would sit between a processor and a memory controller on the same chip.
 
 ---
@@ -141,7 +143,6 @@ sv-direct-mapped-cache/
 ├── tb/main_mem.sv            Main memory model (simulation only)
 ├── tb/tb_cache.sv            Self-checking testbench for the cache
 ├── tb/tb_mem.sv              Small test for the memory model
-├── tb/tb_hello.sv            SystemVerilog feature check for the simulator
 ├── constr/cache_timing.xdc   100 MHz clock constraint
 └── README.md
 ```
