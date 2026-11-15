@@ -1,16 +1,18 @@
-// tb_cache.sv - self-checking testbench for cache.sv
+// tb_cache.sv - self-checking testbench for cache.sv (any WAYS: 1, 2, 4 or 8)
 //
 //   DUT:        cache (the design)  <->  main_mem (simulation model of memory)
 //   Reference:  ref_mem  - every value ever written, so read data can be checked
-//               ref_valid/ref_tag - a software copy of the cache's lookup, so we
-//               know whether each access SHOULD hit or miss
+//               ref_valid/ref_tag/ref_age - a software copy of the cache's sets,
+//               ways and LRU order, so we know whether each access SHOULD hit
 //   Tests:      directed tests (each cache behaviour on purpose), then
-//               N_RANDOM constrained-random reads and writes
+//               N_RANDOM constrained-random reads and writes, then a
+//               conflict-heavy workload that shows the benefit of more ways
 //   Checks:     read data, hit/miss, "a read hit never uses memory",
 //               performance counters, plus SVA assertions on the handshakes
 //
 // Run in Vivado: set tb_cache as simulation top, Run Behavioral Simulation, then Run All.
-module tb_cache;
+// To test another associativity, change WAYS below (or override the parameter).
+module tb_cache #(parameter int WAYS = 4);
 
   // ---------------------------------------------------------------------------
   // Settings (must match the design and memory defaults)
@@ -20,6 +22,8 @@ module tb_cache;
   localparam int MEM_WORDS      = 1024;   // main_mem size: 4 KiB
   localparam int LATENCY        = 4;
   localparam int N_RANDOM       = 1000;
+  localparam int N_CONFLICT     = 400;
+  localparam int SETS           = NUM_LINES / WAYS;
 
   // ---------------------------------------------------------------------------
   // Clock, reset and wires
@@ -39,7 +43,7 @@ module tb_cache;
 
   logic [31:0]  read_hits, read_misses, writes;
 
-  cache #(.NUM_LINES(NUM_LINES), .WORDS_PER_LINE(WORDS_PER_LINE)) dut (.*);
+  cache #(.NUM_LINES(NUM_LINES), .WORDS_PER_LINE(WORDS_PER_LINE), .WAYS(WAYS)) dut (.*);
 
   main_mem #(.MEM_WORDS(MEM_WORDS), .LATENCY(LATENCY)) mem (.*);
 
@@ -47,8 +51,9 @@ module tb_cache;
   // Reference model
   // ---------------------------------------------------------------------------
   logic [31:0] ref_mem [int];             // address -> last value written
-  logic        ref_valid [NUM_LINES];
-  int          ref_tag   [NUM_LINES];
+  logic        ref_valid [SETS][WAYS];
+  int          ref_tag   [SETS][WAYS];
+  int          ref_age   [SETS][WAYS];   // 0 = most recently used
 
   // What memory should hold at an address: last write, or the initial pattern
   function automatic logic [31:0] expected_value(logic [31:0] addr);
@@ -56,14 +61,37 @@ module tb_cache;
     return 32'hA500_0000 + ((addr >> 2) % MEM_WORDS);
   endfunction
 
-  function automatic int index_of(logic [31:0] addr); return (addr >> 4) % NUM_LINES; endfunction
-  function automatic int tag_of  (logic [31:0] addr); return addr >> 10;               endfunction
+  function automatic int index_of(logic [31:0] addr); return (addr >> 4) % SETS; endfunction
+  function automatic int tag_of  (logic [31:0] addr); return (addr >> 4) / SETS; endfunction
+
+  // Which way of the set holds this tag (-1 if none)
+  function automatic int find_way(int set, int tag);
+    for (int w = 0; w < WAYS; w++)
+      if (ref_valid[set][w] && ref_tag[set][w] == tag) return w;
+    return -1;
+  endfunction
+
+  // Make way w the most recently used in its set (same rule as the design)
+  function automatic void touch(int set, int w);
+    int old = ref_age[set][w];
+    for (int i = 0; i < WAYS; i++)
+      if (ref_age[set][i] < old) ref_age[set][i]++;
+    ref_age[set][w] = 0;
+  endfunction
+
+  // Way a read miss will fill: first empty way, otherwise the least recently used
+  function automatic int victim(int set);
+    for (int w = 0; w < WAYS; w++) if (!ref_valid[set][w]) return w;
+    for (int w = 0; w < WAYS; w++) if (ref_age[set][w] == WAYS - 1) return w;
+    return 0;
+  endfunction
 
   // ---------------------------------------------------------------------------
   // Scoreboard counters
   // ---------------------------------------------------------------------------
   int checks = 0, errors = 0;
   int exp_hits = 0, exp_misses = 0, exp_writes = 0;
+  int rand_hits, rand_misses;            // totals at the end of the random phase
   int hit_lat_min = 1000, hit_lat_max = 0, miss_lat_min = 1000, miss_lat_max = 0;
 
   // Count memory handshakes, so we can prove a read hit never touches memory
@@ -80,12 +108,13 @@ module tb_cache;
   // ---------------------------------------------------------------------------
   task automatic access(input logic we, input logic [31:0] addr, input logic [31:0] wdata,
                         input string name = "");
-    int          cycles, mem_before, idx;
+    int          cycles, mem_before, idx, way;
     bit          should_hit;
     logic [31:0] expect_data;
 
     idx         = index_of(addr);
-    should_hit  = ref_valid[idx] && (ref_tag[idx] == tag_of(addr));
+    way         = find_way(idx, tag_of(addr));
+    should_hit  = (way >= 0);
     expect_data = expected_value(addr);
     mem_before  = mem_requests;
 
@@ -110,6 +139,7 @@ module tb_cache;
       if (mem_requests - mem_before != 1)
         fail($sformatf("%s: write used %0d memory requests, expected 1", name, mem_requests - mem_before));
       ref_mem[addr] = wdata;               // a write miss does NOT allocate: ref cache unchanged
+      if (should_hit) touch(idx, way);     // a write hit makes the way most recently used
     end else begin
       if (cpu_resp_rdata !== expect_data)
         fail($sformatf("%s: read %h returned %h, expected %h", name, addr, cpu_resp_rdata, expect_data));
@@ -119,14 +149,17 @@ module tb_cache;
           fail($sformatf("%s: read hit at %h used memory", name, addr));
         hit_lat_min = (cycles < hit_lat_min) ? cycles : hit_lat_min;
         hit_lat_max = (cycles > hit_lat_max) ? cycles : hit_lat_max;
+        touch(idx, way);
       end else begin
         exp_misses++;
         if (mem_requests - mem_before != 1)
           fail($sformatf("%s: read miss at %h used %0d memory requests, expected 1", name, addr, mem_requests - mem_before));
         miss_lat_min = (cycles < miss_lat_min) ? cycles : miss_lat_min;
         miss_lat_max = (cycles > miss_lat_max) ? cycles : miss_lat_max;
-        ref_valid[idx] = 1;                // a read miss fills the line
-        ref_tag[idx]   = tag_of(addr);
+        way = victim(idx);                 // a read miss fills the victim way
+        ref_valid[idx][way] = 1;
+        ref_tag[idx][way]   = tag_of(addr);
+        touch(idx, way);
       end
     end
 
@@ -173,7 +206,13 @@ module tb_cache;
   initial begin
     Txn t;
     t = new();
-    for (int i = 0; i < NUM_LINES; i++) ref_valid[i] = 0;
+    for (int s = 0; s < SETS; s++)
+      for (int w = 0; w < WAYS; w++) begin
+        ref_valid[s][w] = 0;
+        ref_age[s][w]   = w;
+      end
+
+    $display("==== Cache configuration: %0d-way, %0d sets ====", WAYS, SETS);
 
     rst_n = 0;
     repeat (3) @(posedge clk);
@@ -206,12 +245,31 @@ module tb_cache;
     end
 
     // -------------------------------------------------------------------------
+    // Conflict-heavy workload: reads from 4 lines that all map to the same set
+    // in a direct-mapped cache (addresses 1 KiB apart). A direct-mapped cache
+    // keeps evicting them; with 4 or more ways they all fit.
+    // -------------------------------------------------------------------------
+    rand_hits   = exp_hits;
+    rand_misses = exp_misses;
+    $display("---- %0d conflict-heavy reads ----", N_CONFLICT);
+    repeat (N_CONFLICT) begin
+      logic [31:0] a;
+      a = 32'h050 + ($urandom_range(0, 3) * 32'h400) + ($urandom_range(0, 3) * 4);
+      access(0, a, '0, "conflict");
+    end
+
+    // -------------------------------------------------------------------------
     // Summary
     // -------------------------------------------------------------------------
     $display("");
     $display("Accesses checked : %0d", checks);
-    $display("Reads            : %0d hits, %0d misses (hit rate %0.1f%%)",
+    $display("Configuration    : %0d-way, %0d sets", WAYS, SETS);
+    $display("Reads (all)      : %0d hits, %0d misses (hit rate %0.1f%%)",
              exp_hits, exp_misses, 100.0 * exp_hits / (exp_hits + exp_misses));
+    $display("Random phase     : hit rate %0.1f%%",
+             100.0 * rand_hits / (rand_hits + rand_misses));
+    $display("Conflict phase   : hit rate %0.1f%%",
+             100.0 * (exp_hits - rand_hits) / ((exp_hits - rand_hits) + (exp_misses - rand_misses)));
     $display("Writes           : %0d", exp_writes);
     $display("Read hit latency : %0d-%0d cycles, read miss latency: %0d-%0d cycles",
              hit_lat_min, hit_lat_max, miss_lat_min, miss_lat_max);
