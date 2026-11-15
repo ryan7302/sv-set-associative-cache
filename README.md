@@ -2,7 +2,7 @@
 
 A parameterised cache in SystemVerilog: direct-mapped (`WAYS = 1`) or set-associative with LRU replacement (`WAYS = 2, 4, 8`; default 4). Verified with a self-checking, constrained-random testbench in Vivado XSim and implemented on an Artix-7 FPGA.
 
-> Branch `set-associative`. The original direct-mapped version is on `main`.
+> Set `WAYS = 1` for the original direct-mapped design. Its first release is tagged `v1-direct-mapped`.
 
 ![Tests](https://img.shields.io/badge/tests-1412%20accesses%20passing-brightgreen) ![Timing](https://img.shields.io/badge/timing-met%20at%20100%20MHz-brightgreen) ![Tool](https://img.shields.io/badge/Vivado-2026.1-blue)
 
