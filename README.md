@@ -113,7 +113,7 @@ Self-checking testbench `tb_cache.sv`:
 | **Hit rate, conflict-heavy reads** | **about 22%** | **99%** |
 | Read hit / miss latency | 1 / 7 cycles | 1 / 7 cycles |
 | Slice LUTs | **400** (1.9%) | **1,217** (5.9%) |
-| — of which distributed RAM | 150 | 608 |
+| of which distributed RAM | 150 | 608 |
 | Registers | 263 | 409 |
 | Setup slack at 100 MHz (WNS) | **+2.270 ns** | **+0.303 ns** |
 | Hold slack (WHS) | +0.051 ns | +0.071 ns |
